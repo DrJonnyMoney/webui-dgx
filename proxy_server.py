@@ -16,7 +16,7 @@ WEBUI_PORT = 8080  # Open WebUI's default port
 PROXY_PORT = 8888  # Kubeflow accessible port
 MAX_REQUEST_SIZE = 1024 * 1024 * 1024  # 1GB
 HTTP_TIMEOUT = 600  # 10 minutes
-STARTUP_TIMEOUT = 120  # Max seconds to wait for Open WebUI to start (increased for initial DB setup)
+STARTUP_TIMEOUT = 120  # Max seconds to wait for Open WebUI to start
 HEARTBEAT_INTERVAL = 30  # WebSocket heartbeat interval in seconds
 webui_process = None
 
@@ -34,21 +34,8 @@ def start_openwebui():
     # Environment variables for Open WebUI
     env = os.environ.copy()
     env['PORT'] = str(WEBUI_PORT)
-    
-    # Get the host from the environment or use a default
-    host = os.environ.get('PROXY_HOST', 'localhost')
-    protocol = os.environ.get('PROXY_PROTOCOL', 'http')
-    
-    # Set the URL with the notebook prefix
-    env['WEBUI_URL'] = f"{protocol}://{host}:{PROXY_PORT}{NB_PREFIX}"
-    
-    # Add additional variables to help Open WebUI understand it's behind a proxy
     env['DATA_DIR'] = "/home/jovyan/.open-webui"
-    env['BASE_PATH'] = NB_PREFIX  # May help with some frameworks
-    env['PUBLIC_URL'] = NB_PREFIX  # Common in React apps
-    env['FRONTEND_BUILD_DIR'] = ""  # Let Open WebUI find its own frontend files
     
-    # Use standard pip-installed openwebui
     cmd = [
         "open-webui", 
         "serve"
@@ -85,12 +72,6 @@ async def proxy_handler(request):
         headers = dict(request.headers)
         headers['Host'] = f'127.0.0.1:{WEBUI_PORT}'
         
-        # Add X-Forwarded headers to help Open WebUI understand it's behind a proxy
-        headers['X-Forwarded-Proto'] = request.headers.get('X-Forwarded-Proto', 'http')
-        headers['X-Forwarded-For'] = request.headers.get('X-Forwarded-For', request.remote)
-        headers['X-Forwarded-Host'] = request.headers.get('X-Forwarded-Host', request.host)
-        headers['X-Forwarded-Prefix'] = NB_PREFIX
-        
         # Remove headers that might cause issues
         headers.pop('Content-Length', None)
         
@@ -110,61 +91,16 @@ async def proxy_handler(request):
                 # Read the response body
                 body = await resp.read()
                 
-                # For HTML responses containing asset references, we need to rewrite paths
-                content_type = resp.headers.get('Content-Type', '')
-                if 'text/html' in content_type and len(body) > 0:
-                    try:
-                        text_body = body.decode('utf-8')
-                        
-                        # Rewrite asset paths in HTML
-                        # Fix script, link, img, and other asset references
-                        if NB_PREFIX:
-                            # Fix asset paths that start with "/" but don't have the notebook prefix
-                            text_body = text_body.replace('src="/', f'src="{NB_PREFIX}/')
-                            text_body = text_body.replace('href="/', f'href="{NB_PREFIX}/')
-                            text_body = text_body.replace('from "/', f'from "{NB_PREFIX}/')
-                            text_body = text_body.replace('import "/', f'import "{NB_PREFIX}/')
-                            text_body = text_body.replace('url(/', f'url({NB_PREFIX}/')
-                            
-                            # Fix asset paths in JavaScript (modules)
-                            text_body = text_body.replace('import.meta.url', f'"${NB_PREFIX}/"+import.meta.url')
-                            
-                            # Update base path if present
-                            if '<base href="/' in text_body:
-                                text_body = text_body.replace('<base href="/', f'<base href="{NB_PREFIX}/')
-                        
-                        body = text_body.encode('utf-8')
-                    except UnicodeDecodeError:
-                        # If we can't decode as UTF-8, leave the body as is
-                        pass
-                
-                # For JavaScript files, ensure they have the correct MIME type
-                if path.endswith('.js'):
-                    content_type = 'application/javascript'
-                elif path.endswith('.css'):
-                    content_type = 'text/css'
-                elif path.endswith('.json'):
-                    content_type = 'application/json'
-                else:
-                    content_type = resp.headers.get('Content-Type', '')
-                
-                # Create response with the same status code and modified body
+                # Create response with the same status code and body
                 response = web.Response(
                     status=resp.status,
-                    body=body,
-                    content_type=content_type
+                    body=body
                 )
                 
-                # Copy relevant headers from the response but ensure content-type is correct
+                # Copy relevant headers from the response
                 for key, value in resp.headers.items():
-                    if key.lower() not in ('content-length', 'transfer-encoding', 'content-type'):
+                    if key.lower() not in ('content-length', 'transfer-encoding'):
                         response.headers[key] = value
-                
-                # Add CORS headers to help with cross-origin requests
-                response.headers['Access-Control-Allow-Origin'] = '*'
-                response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS, PUT, DELETE'
-                response.headers['Access-Control-Allow-Headers'] = 'Origin, X-Requested-With, Content-Type, Accept, Authorization'
-                response.headers['Access-Control-Allow-Credentials'] = 'true'
                 
                 # Fix location headers for redirects
                 if 'Location' in response.headers:
@@ -204,13 +140,8 @@ async def websocket_proxy(request):
         async with ClientSession() as session:
             logger.debug(f"Connecting to WebSocket: {ws_url}")
             
-            # Add custom headers for the WebSocket connection
-            headers = dict(request.headers)
-            headers['X-Forwarded-Prefix'] = NB_PREFIX
-            
             async with session.ws_connect(
-                ws_url,
-                headers=headers,
+                ws_url, 
                 timeout=60, 
                 heartbeat=HEARTBEAT_INTERVAL
             ) as ws_server:
