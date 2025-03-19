@@ -37,13 +37,9 @@ def start_openwebui():
     env['WEBUI_URL'] = f"http://localhost:{PROXY_PORT}{NB_PREFIX}"
     env['DATA_DIR'] = "/home/jovyan/.open-webui"
     
-    # Use uv to run Open WebUI
+    # Use standard pip-installed openwebui
     cmd = [
-        "/root/.cargo/bin/uv", 
-        "--python", 
-        "3.11", 
-        "run", 
-        "open-webui@latest", 
+        "open-webui", 
         "serve"
     ]
     logger.info(f"Starting Open WebUI with command: {' '.join(cmd)}")
