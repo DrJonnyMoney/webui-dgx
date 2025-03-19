@@ -50,7 +50,7 @@ async def is_openwebui_ready():
         async with ClientSession() as session:
             async with session.get(f'http://127.0.0.1:{WEBUI_PORT}/', timeout=2) as resp:
                 return resp.status < 500
-    except:
+    except Exception:
         return False
 
 # Proxy handler for HTTP requests
@@ -68,11 +68,17 @@ async def proxy_handler(request):
     
     # Forward the request
     async with ClientSession() as session:
-        # Copy headers but set the Host to match what Open WebUI expects
+        # Copy headers from the original request
         headers = dict(request.headers)
+        # -- Additional headers added to help bypass auth redirection --
+        headers['X-Forwarded-For'] = request.remote
+        headers['X-Forwarded-Proto'] = request.scheme
+        headers['X-Forwarded-Host'] = request.host
+        # Force the Origin to the internal host
+        headers['Origin'] = f'http://127.0.0.1:{WEBUI_PORT}'
+        # Set Host header for the internal request
         headers['Host'] = f'127.0.0.1:{WEBUI_PORT}'
-        
-        # Remove headers that might cause issues
+        # Remove Content-Length to let the client session compute it properly
         headers.pop('Content-Length', None)
         
         # Read request data if not a GET request
@@ -102,10 +108,9 @@ async def proxy_handler(request):
                     if key.lower() not in ('content-length', 'transfer-encoding'):
                         response.headers[key] = value
                 
-                # Fix location headers for redirects
+                # Fix location headers for redirects if needed
                 if 'Location' in response.headers:
                     location = response.headers['Location']
-                    # If it's an absolute path but not a full URL, prepend the notebook prefix
                     if location.startswith('/') and not location.startswith('//'):
                         response.headers['Location'] = NB_PREFIX + location
                 
@@ -114,32 +119,27 @@ async def proxy_handler(request):
             error_msg = f"Proxy error: {str(e)}"
             logger.error(error_msg)
             
-            # Return appropriate error response based on Accept header
             if 'application/json' in request.headers.get('Accept', ''):
                 return web.json_response({"error": error_msg}, status=500)
             else:
                 return web.Response(status=500, text=error_msg)
 
-# WebSocket proxy handler
+# WebSocket proxy handler (modified similarly if needed)
 async def websocket_proxy(request):
-    # Normalize the path
     ws_path = normalize_path(request.path)
     ws_url = f"ws://127.0.0.1:{WEBUI_PORT}{ws_path}"
     
     logger.debug(f"WebSocket request: {request.path} -> {ws_url}")
     
-    # Prepare client WebSocket
     ws_client = web.WebSocketResponse(heartbeat=HEARTBEAT_INTERVAL)
     await ws_client.prepare(request)
     
-    # Two tasks for bidirectional communication
     client_to_server_task = None
     server_to_client_task = None
     
     try:
         async with ClientSession() as session:
             logger.debug(f"Connecting to WebSocket: {ws_url}")
-            
             async with session.ws_connect(
                 ws_url, 
                 timeout=60, 
@@ -147,7 +147,6 @@ async def websocket_proxy(request):
             ) as ws_server:
                 logger.debug("WebSocket connected")
                 
-                # Server to client message forwarding
                 async def forward_server_to_client():
                     try:
                         async for msg in ws_server:
@@ -160,7 +159,6 @@ async def websocket_proxy(request):
                     except Exception as e:
                         logger.error(f"Error forwarding server to client: {e}")
                 
-                # Client to server message forwarding
                 async def forward_client_to_server():
                     try:
                         async for msg in ws_client:
@@ -173,29 +171,23 @@ async def websocket_proxy(request):
                     except Exception as e:
                         logger.error(f"Error forwarding client to server: {e}")
                 
-                # Start both forwarding tasks
                 server_to_client_task = asyncio.create_task(forward_server_to_client())
                 client_to_server_task = asyncio.create_task(forward_client_to_server())
                 
-                # Wait until either task completes (meaning a connection closed)
                 done, pending = await asyncio.wait(
                     [server_to_client_task, client_to_server_task],
                     return_when=asyncio.FIRST_COMPLETED
                 )
                 
-                # Cancel the pending task
                 for task in pending:
                     task.cancel()
                 
     except Exception as e:
         logger.error(f"WebSocket proxy error: {e}")
     finally:
-        # Clean up tasks if they exist and weren't already cancelled
         for task in [client_to_server_task, server_to_client_task]:
             if task and not task.done():
                 task.cancel()
-        
-        # Make sure the client WebSocket is closed
         if not ws_client.closed:
             await ws_client.close()
     
@@ -204,14 +196,10 @@ async def websocket_proxy(request):
 # Monitor Open WebUI health and restart if needed
 async def health_monitor():
     global webui_process
-    
     while True:
-        # Check if process is still running
         if webui_process.poll() is not None:
             logger.warning("Open WebUI process died, restarting...")
             webui_process = start_openwebui()
-        
-        # Sleep for 30 seconds between checks
         await asyncio.sleep(30)
 
 async def main():
@@ -232,22 +220,17 @@ async def main():
     
     logger.info("Open WebUI started successfully")
     
-    # Create and start health monitor
     health_task = asyncio.create_task(health_monitor())
     
-    # Create app with routes
     app = web.Application(client_max_size=MAX_REQUEST_SIZE)
     
-    # Set up WebSocket routes
+    # WebSocket routes and catch-all HTTP route
     app.router.add_routes([
         web.get(NB_PREFIX + '/ws', websocket_proxy),
         web.get('/ws', websocket_proxy),
+        web.route('*', '/{path:.*}', proxy_handler),
     ])
-
-    # Set up a catch-all route for all other requests
-    app.router.add_route('*', '/{path:.*}', proxy_handler)
     
-    # Start the proxy server
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PROXY_PORT)
@@ -255,28 +238,20 @@ async def main():
     
     logger.info(f"Proxy server running at http://0.0.0.0:{PROXY_PORT}{NB_PREFIX}/")
     
-    # Keep running until interrupted
     try:
         while True:
             await asyncio.sleep(3600)
     except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("Shutting down...")
     finally:
-        # Clean up
         health_task.cancel()
-        
         if webui_process:
             webui_process.terminate()
             try:
-                # Wait for process to terminate gracefully
                 webui_process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                # Force kill if it doesn't terminate in time
                 webui_process.kill()
-            
             logger.info("Open WebUI process terminated")
-        
-        # Clean up the web server
         await runner.cleanup()
 
 if __name__ == "__main__":
