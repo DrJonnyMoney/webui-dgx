@@ -36,12 +36,6 @@ def start_openwebui():
     env['PORT'] = str(WEBUI_PORT)
     env['DATA_DIR'] = "/home/jovyan/.open-webui"
     
-    # Authentication bypass - for testing
-    env['WEBUI_AUTH'] = "False"  # Disable authentication completely
-    env['ENABLE_SIGNUP'] = "True"
-    env['ENABLE_LOGIN_FORM'] = "False" 
-    env['DEFAULT_USER_ROLE'] = "admin"
-    
     cmd = [
         "open-webui", 
         "serve"
