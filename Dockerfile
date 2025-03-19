@@ -21,8 +21,8 @@ RUN apt-get update && apt-get install -y \
     wget \
     build-essential \
     python3-dev \
-    libgl1-mesa-glx \  # Required for OpenCV/transformers
-    ffmpeg \  # Required for audio processing
+    libgl1-mesa-glx \
+    ffmpeg \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
