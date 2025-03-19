@@ -21,12 +21,16 @@ RUN apt-get update && apt-get install -y \
     wget \
     build-essential \
     python3-dev \
+    libgl1-mesa-glx \  # Required for OpenCV/transformers
+    ffmpeg \  # Required for audio processing
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Open WebUI
 RUN pip install --upgrade pip && \
-    pip install open-webui
+    pip install open-webui && \
+    # Fix permissions for static files
+    chmod -R 777 /opt/conda/lib/python3.11/site-packages/open_webui/static
 
 # Create data directory in tmp_home (which will be copied to home at runtime)
 RUN mkdir -p /tmp_home/jovyan/.open-webui
