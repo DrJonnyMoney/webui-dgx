@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("openwebui-proxy")
 
 # Configuration
-NB_PREFIX = os.environ.get('NB_PREFIX', '')
+NB_PREFIX = os.environ.get('NB_PREFIX', '')  # e.g. "/notebook/jonny/openui"
 WEBUI_PORT = 8080      # Open WebUI's default port
 PROXY_PORT = 8888      # External port
 MAX_REQUEST_SIZE = 1024 * 1024 * 1024  # 1GB
@@ -53,8 +53,8 @@ async def is_openwebui_ready():
 async def proxy_handler(request):
     """
     Forward requests to Open WebUI after stripping NB_PREFIX from the path.
-    Additionally, if the response is HTML, rewrite relative asset URLs
-    (e.g. in href/src attributes) to include NB_PREFIX.
+    For HTML responses, inject a <base> tag into the <head> so that relative URLs
+    (like those for dynamic module imports) resolve correctly.
     """
     # Normalize incoming path
     path = normalize_path(request.path)
@@ -84,31 +84,25 @@ async def proxy_handler(request):
                 timeout=HTTP_TIMEOUT
             ) as resp:
                 body = await resp.read()
-
-                # If the response is HTML, perform URL rewriting on asset paths.
                 content_type = resp.headers.get('Content-Type', '')
+
+                # If the response is HTML, inject a <base> tag
                 if 'text/html' in content_type and NB_PREFIX:
                     try:
-                        # Decode, rewrite, and re-encode
                         body_text = body.decode('utf-8')
-                        # Rewrite any attribute like href="/something" or src="/something"
-                        def rewrite_url(match):
-                            attr, url = match.groups()
-                            # Only add NB_PREFIX if it's not already there.
-                            if not url.startswith(NB_PREFIX):
-                                return f'{attr}="{NB_PREFIX}{url}"'
-                            return match.group(0)
-                        # This regex matches href or src attributes with a value starting with '/'
-                        body_text = re.sub(r'(href|src)="(/[^"]+)"', rewrite_url, body_text)
+                        # Construct a base tag that ends with a slash
+                        base_tag = f'<base href="{NB_PREFIX.rstrip("/")}/">'
+                        # Insert the base tag immediately after the opening <head> tag
+                        body_text = re.sub(r'(<head[^>]*>)', r'\1' + base_tag, body_text, count=1, flags=re.IGNORECASE)
                         body = body_text.encode('utf-8')
                     except Exception as e:
-                        logger.error(f"Error rewriting response body: {e}")
+                        logger.error(f"Error injecting base tag: {e}")
 
                 response = web.Response(
                     status=resp.status,
                     body=body
                 )
-                # Copy headers from upstream (adjusting Location header if needed)
+                # Copy headers from upstream, adjusting Location if needed
                 for key, value in resp.headers.items():
                     if key.lower() not in ('content-length', 'transfer-encoding'):
                         response.headers[key] = value
@@ -128,16 +122,13 @@ async def proxy_handler(request):
 async def websocket_proxy(request):
     """
     Proxy handler for WebSocket connections.
-    (For simplicity, URL rewriting is not applied here.)
+    (No URL rewriting is applied here.)
     """
     ws_path = normalize_path(request.path)
     ws_url = f"ws://127.0.0.1:{WEBUI_PORT}{ws_path}"
-
     logger.debug(f"WebSocket request: {request.path} -> {ws_url}")
-
     ws_client = web.WebSocketResponse(heartbeat=HEARTBEAT_INTERVAL)
     await ws_client.prepare(request)
-
     client_to_server_task = None
     server_to_client_task = None
 
