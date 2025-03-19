@@ -21,14 +21,12 @@ RUN apt-get update && apt-get install -y \
     wget \
     build-essential \
     python3-dev \
-    python3.11 \
-    python3.11-venv \
-    python3.11-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+# Install Open WebUI
+RUN pip install --upgrade pip && \
+    pip install open-webui
 
 # Create data directory in tmp_home (which will be copied to home at runtime)
 RUN mkdir -p /tmp_home/jovyan/.open-webui
