@@ -23,6 +23,15 @@ webui_process = None
 # Common path normalization function
 def normalize_path(path):
     """Normalize path by removing prefix and ensuring it starts with a slash"""
+    # Special handling for static assets with specific paths
+    if '/_app/immutable/' in path:
+        # For these special paths, keep them exactly as they are
+        # Just remove the notebook prefix if present
+        if path.startswith(NB_PREFIX):
+            return path[len(NB_PREFIX):]
+        return path
+        
+    # Normal path handling
     if path.startswith(NB_PREFIX):
         path = path[len(NB_PREFIX):]
     if not path.startswith('/'):
@@ -36,8 +45,15 @@ def start_openwebui():
     env['PORT'] = str(WEBUI_PORT)
     env['DATA_DIR'] = "/home/jovyan/.open-webui"
     
+    # Authentication bypass - for testing
+    env['WEBUI_AUTH'] = "False"  # Disable authentication completely
+    env['ENABLE_SIGNUP'] = "True"
+    env['ENABLE_LOGIN_FORM'] = "False" 
+    env['DEFAULT_USER_ROLE'] = "admin"
+    
+    # Use the user-installed version of Open WebUI
     cmd = [
-        "open-webui", 
+        os.path.expanduser("~/.local/bin/open-webui"), 
         "serve"
     ]
     logger.info(f"Starting Open WebUI with command: {' '.join(cmd)}")
@@ -55,16 +71,86 @@ async def is_openwebui_ready():
 
 # Proxy handler for HTTP requests
 async def proxy_handler(request):
+    path = request.path
+    
+    # Check if this is a request for a JavaScript module
+    if '/_app/immutable/' in path:
+        try:
+            # Extract the file path part after /_app/immutable/
+            file_path = path
+            if file_path.startswith(NB_PREFIX):
+                file_path = file_path[len(NB_PREFIX):]
+            
+            # Construct the local path to the file
+            local_path = os.path.join(os.path.expanduser('~'), '.local/lib/python3.11/site-packages/open_webui/frontend/build', file_path)
+            
+            # Check if file exists
+            if os.path.exists(local_path):
+                with open(local_path, 'rb') as f:
+                    content = f.read()
+                
+                # Determine content type
+                content_type = None
+                if path.endswith('.js'):
+                    content_type = 'application/javascript'
+                elif path.endswith('.css'):
+                    content_type = 'text/css'
+                elif path.endswith('.json'):
+                    content_type = 'application/json'
+                elif path.endswith('.svg'):
+                    content_type = 'image/svg+xml'
+                elif path.endswith('.png'):
+                    content_type = 'image/png'
+                elif path.endswith('.jpg') or path.endswith('.jpeg'):
+                    content_type = 'image/jpeg'
+                elif path.endswith('.ttf'):
+                    content_type = 'font/ttf'
+                else:
+                    content_type = 'application/octet-stream'
+                
+                # Create the response
+                response = web.Response(
+                    body=content,
+                    content_type=content_type
+                )
+                
+                # Add CORS headers
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS, PUT, DELETE'
+                response.headers['Access-Control-Allow-Headers'] = 'Origin, X-Requested-With, Content-Type, Accept, Authorization'
+                
+                return response
+            else:
+                logger.warning(f"File not found: {local_path}")
+        except Exception as e:
+            logger.error(f"Error serving static file: {str(e)}")
+    
+    # For all other requests, use normal proxy
     # Normalize the path
-    path = normalize_path(request.path)
-    target_url = f'http://127.0.0.1:{WEBUI_PORT}{path}'
+    norm_path = normalize_path(path)
+    target_url = f'http://127.0.0.1:{WEBUI_PORT}{norm_path}'
     
     # Add query parameters if present
     params = request.rel_url.query
     if params:
         target_url += '?' + '&'.join(f"{k}={v}" for k, v in params.items())
     
-    logger.debug(f"Proxying: {request.method} {request.path} -> {target_url}")
+    logger.info(f"Proxying: {request.method} {request.path} -> {target_url}")  # Upgraded to INFO for debugging
+    
+    # Set proper content types for static assets
+    content_type = None
+    if path.endswith('.js') or '/_app/immutable/' in path and path.endswith('.js'):
+        content_type = 'application/javascript'
+    elif path.endswith('.css'):
+        content_type = 'text/css'
+    elif path.endswith('.json'):
+        content_type = 'application/json'
+    elif path.endswith('.ico'):
+        content_type = 'image/x-icon'
+    elif path.endswith('.png'):
+        content_type = 'image/png'
+    elif path.endswith('.jpg') or path.endswith('.jpeg'):
+        content_type = 'image/jpeg'
     
     # Forward the request
     async with ClientSession() as session:
@@ -94,12 +180,18 @@ async def proxy_handler(request):
                 # Create response with the same status code and body
                 response = web.Response(
                     status=resp.status,
-                    body=body
+                    body=body,
+                    content_type=content_type or resp.headers.get('Content-Type')
                 )
                 
-                # Copy relevant headers from the response
+                # Add CORS headers
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS, PUT, DELETE'
+                response.headers['Access-Control-Allow-Headers'] = 'Origin, X-Requested-With, Content-Type, Accept, Authorization'
+                
+                # Copy relevant headers from the response (except content-type which we handle separately)
                 for key, value in resp.headers.items():
-                    if key.lower() not in ('content-length', 'transfer-encoding'):
+                    if key.lower() not in ('content-length', 'transfer-encoding', 'content-type'):
                         response.headers[key] = value
                 
                 # Fix location headers for redirects
@@ -108,6 +200,15 @@ async def proxy_handler(request):
                     # If it's an absolute path but not a full URL, prepend the notebook prefix
                     if location.startswith('/') and not location.startswith('//'):
                         response.headers['Location'] = NB_PREFIX + location
+                
+                # If the request is for a JavaScript file but got HTML, it might be a routing issue
+                if (path.endswith('.js') or '/_app/immutable/' in path) and b'<!DOCTYPE html>' in body[:100]:
+                    # This suggests that server is returning the HTML index instead of the JS file
+                    logger.warning(f"Received HTML for JavaScript request: {path}")
+                    # Fix the path to include the notebook prefix for client-side imports
+                    if path.startswith('/_app/'):
+                        correct_path = f"{NB_PREFIX}{path}"
+                        logger.info(f"Path should likely be: {correct_path}")
                 
                 return response
         except Exception as e:
