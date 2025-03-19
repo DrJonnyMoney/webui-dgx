@@ -21,10 +21,22 @@ RUN apt-get update && apt-get install -y \
     wget \
     build-essential \
     python3-dev \
-    libgl1-mesa-glx \
-    ffmpeg \
+    libgl1-mesa-glx \  # Required for OpenCV/transformers
+    ffmpeg \  # Required for audio processing
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Open WebUI
+RUN pip install --upgrade pip && \
+    pip install open-webui && \
+    # Fix permissions for static files
+    chmod -R 777 /opt/conda/lib/python3.11/site-packages/open_webui/static
+
+# Create data directory in tmp_home (which will be copied to home at runtime)
+RUN mkdir -p /tmp_home/jovyan/.open-webui
+
+# Set permissions for the data directory
+RUN chown -R ${NB_USER}:${NB_GID} /tmp_home/jovyan/.open-webui
 
 # Install additional packages for the proxy server
 RUN pip install aiohttp
@@ -41,21 +53,13 @@ COPY openwebui-run /etc/services.d/openwebui/run
 RUN chmod 755 /etc/services.d/openwebui/run && \
     chown ${NB_USER}:${NB_GID} /etc/services.d/openwebui/run
 
-# Create directories and set permissions
-RUN mkdir -p /tmp_home/jovyan/.open-webui && \
-    chown -R ${NB_USER}:${NB_GID} /tmp_home/jovyan/.open-webui
-
-# Switch to non-root user for pip install
-USER $NB_UID
-
-# Install Open WebUI as non-root user
-RUN pip install --user open-webui
-
-# Environment variables set through proxy server
+# Environment variables will be set by the proxy server script as needed
 
 # Expose port 8888
 EXPOSE 8888
 
+# Switch back to non-root user
+USER $NB_UID
+
 # Keep the original entrypoint
-USER root
 ENTRYPOINT ["/init"]
