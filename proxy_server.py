@@ -66,7 +66,7 @@ def rewrite_html(body_text):
     def repl(match):
         attr = match.group(1)
         url = match.group(2)
-        # Only rewrite if the URL doesn't already start with NB_PREFIX
+        # Only rewrite if the URL doesn't already start with NB_PREFIX.
         if not url.startswith(NB_PREFIX):
             new_url = NB_PREFIX + url
             logger.debug(f"Rewriting {attr} URL: {url} -> {new_url}")
@@ -80,6 +80,8 @@ async def proxy_handler(request):
     """
     Forward requests to Open WebUI after stripping NB_PREFIX from the path.
     For HTML responses, rewrite the HTML so that asset URLs include NB_PREFIX.
+    For static asset requests (manifest.json or any path starting with /_app), remove cookies
+    to avoid triggering auth redirects.
     """
     logger.info(f"Incoming request: {request.method} {request.path}")
     logger.debug(f"Incoming headers: {dict(request.headers)}")
@@ -92,12 +94,20 @@ async def proxy_handler(request):
         target_url += '?' + '&'.join(f"{k}={v}" for k, v in params.items())
     logger.info(f"Forwarding to target URL: {target_url}")
 
+    # For static asset requests, such as /manifest.json or anything under /_app,
+    # do not forward cookies so that the Kubeflow auth proxy doesn't trigger a redirect.
+    if path == "/manifest.json" or path.startswith("/_app"):
+        forwarded_cookies = {}
+        logger.debug("Static asset request detected; not forwarding cookies.")
+    else:
+        forwarded_cookies = request.cookies
+
     async with ClientSession() as session:
         headers = dict(request.headers)
         headers.pop('Content-Length', None)
         data = await request.read() if request.method != 'GET' else None
         logger.debug(f"Forwarding headers: {headers}")
-        logger.debug(f"Forwarding cookies: {request.cookies}")
+        logger.debug(f"Forwarding cookies: {forwarded_cookies}")
 
         try:
             async with session.request(
@@ -106,7 +116,7 @@ async def proxy_handler(request):
                 headers=headers,
                 data=data,
                 allow_redirects=False,
-                cookies=request.cookies,
+                cookies=forwarded_cookies,
                 timeout=HTTP_TIMEOUT
             ) as resp:
                 logger.info(f"Received response: status={resp.status}")
@@ -116,6 +126,7 @@ async def proxy_handler(request):
                 content_type = resp_headers.get('Content-Type', '')
                 logger.info(f"Response content type: {content_type}")
 
+                # If response is HTML, rewrite it to inject base tag and rewrite asset URLs.
                 if 'text/html' in content_type:
                     try:
                         body_text = body.decode('utf-8')
