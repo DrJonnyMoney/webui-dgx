@@ -80,7 +80,8 @@ async def proxy_handler(request):
     """
     Forward requests to Open WebUI after stripping NB_PREFIX from the path.
     For HTML responses, rewrite the HTML so that asset URLs include NB_PREFIX.
-    For static asset requests (manifest.json or any path starting with /_app), remove cookies
+    For static asset requests (manifest.json or any path starting with /_app),
+    remove cookies—and for manifest.json also remove/override the Origin header—
     to avoid triggering auth redirects.
     """
     logger.info(f"Incoming request: {request.method} {request.path}")
@@ -94,9 +95,9 @@ async def proxy_handler(request):
         target_url += '?' + '&'.join(f"{k}={v}" for k, v in params.items())
     logger.info(f"Forwarding to target URL: {target_url}")
 
-    # For static asset requests, such as /manifest.json or anything under /_app,
-    # do not forward cookies so that the Kubeflow auth proxy doesn't trigger a redirect.
-    if path == "/manifest.json" or path.startswith("/_app"):
+    # Determine if this is a static asset request that should bypass auth.
+    static_asset = path == "/manifest.json" or path.startswith("/_app")
+    if static_asset:
         forwarded_cookies = {}
         logger.debug("Static asset request detected; not forwarding cookies.")
     else:
@@ -105,6 +106,10 @@ async def proxy_handler(request):
     async with ClientSession() as session:
         headers = dict(request.headers)
         headers.pop('Content-Length', None)
+        # For manifest.json, remove the Origin header to avoid CORS issues.
+        if static_asset and path == "/manifest.json":
+            headers.pop('Origin', None)
+            logger.debug("Removed Origin header for manifest.json request.")
         data = await request.read() if request.method != 'GET' else None
         logger.debug(f"Forwarding headers: {headers}")
         logger.debug(f"Forwarding cookies: {forwarded_cookies}")
@@ -126,7 +131,7 @@ async def proxy_handler(request):
                 content_type = resp_headers.get('Content-Type', '')
                 logger.info(f"Response content type: {content_type}")
 
-                # If response is HTML, rewrite it to inject base tag and rewrite asset URLs.
+                # If the response is HTML, rewrite it to inject base tag and adjust asset URLs.
                 if 'text/html' in content_type:
                     try:
                         body_text = body.decode('utf-8')
