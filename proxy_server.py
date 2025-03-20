@@ -22,7 +22,10 @@ HEARTBEAT_INTERVAL = 30  # WebSocket heartbeat interval
 webui_process = None
 
 def normalize_path(path):
-    """Strip NB_PREFIX from incoming path and ensure it starts with a slash."""
+    """
+    For non-static asset requests, remove the NB_PREFIX so that Open WebUI
+    receives paths starting at '/'.
+    """
     original = path
     if path.startswith(NB_PREFIX):
         path = path[len(NB_PREFIX):]
@@ -53,11 +56,12 @@ async def is_openwebui_ready():
 
 def rewrite_html(body_text):
     """
-    Rewrite the HTML to:
-      1. Inject a <base> tag into the <head> so relative URLs resolve correctly.
-      2. Rewrite asset URLs (href/src attributes) that start with "/" to include NB_PREFIX.
+    Rewrite HTML responses to:
+      1. Inject a <base> tag into the <head> so that relative URLs resolve
+         against NB_PREFIX.
+      2. Rewrite asset URLs (href/src attributes) starting with "/" to include NB_PREFIX.
     """
-    # 1. Inject a <base> tag.
+    # 1. Inject the base tag.
     base_tag = f'<base href="{NB_PREFIX.rstrip("/")}/">'
     body_text = re.sub(r'(<head[^>]*>)', r'\1' + base_tag, body_text, count=1, flags=re.IGNORECASE)
     logger.debug(f"Injected base tag: {base_tag}")
@@ -66,48 +70,52 @@ def rewrite_html(body_text):
     def repl(match):
         attr = match.group(1)
         url = match.group(2)
-        # Only rewrite if the URL doesn't already start with NB_PREFIX.
+        # Only rewrite if it does not already start with NB_PREFIX.
         if not url.startswith(NB_PREFIX):
             new_url = NB_PREFIX + url
             logger.debug(f"Rewriting {attr} URL: {url} -> {new_url}")
             return f'{attr}="{new_url}"'
         return match.group(0)
-
     body_text = re.sub(r'(href|src)="(/[^"]+)"', repl, body_text)
     return body_text
 
 async def proxy_handler(request):
     """
-    Forward requests to Open WebUI after stripping NB_PREFIX from the path.
-    For HTML responses, rewrite the HTML so that asset URLs include NB_PREFIX.
-    For static asset requests (manifest.json or any path starting with /_app),
-    remove cookies—and for manifest.json also remove/override the Origin header—
-    to avoid triggering auth redirects.
+    Forward requests to Open WebUI.
+      - For static asset requests (path starts with '/_app' or is '/manifest.json'):
+          * Force the target URL to include NB_PREFIX.
+          * Do not forward cookies (to avoid triggering auth redirects).
+          * Optionally remove/override the Origin header (for manifest.json) to avoid CORS issues.
+      - For other requests:
+          * Strip NB_PREFIX so Open WebUI receives a root path.
+    For HTML responses, rewrite the HTML to inject a <base> tag and adjust asset URLs.
     """
     logger.info(f"Incoming request: {request.method} {request.path}")
     logger.debug(f"Incoming headers: {dict(request.headers)}")
     logger.debug(f"Incoming cookies: {request.cookies}")
 
-    path = normalize_path(request.path)
-    target_url = f'http://127.0.0.1:{WEBUI_PORT}{path}'
+    # Determine if this is a static asset request
+    static_asset = request.path.startswith("/_app") or request.path == "/manifest.json"
+    if static_asset:
+        # Force target path to include NB_PREFIX
+        target_path = NB_PREFIX + request.path
+        forwarded_cookies = {}
+        logger.debug("Static asset request detected; rewriting path and not forwarding cookies.")
+    else:
+        target_path = normalize_path(request.path)
+        forwarded_cookies = request.cookies
+
+    target_url = f'http://127.0.0.1:{WEBUI_PORT}{target_path}'
     params = request.rel_url.query
     if params:
         target_url += '?' + '&'.join(f"{k}={v}" for k, v in params.items())
     logger.info(f"Forwarding to target URL: {target_url}")
 
-    # Determine if this is a static asset request that should bypass auth.
-    static_asset = path == "/manifest.json" or path.startswith("/_app")
-    if static_asset:
-        forwarded_cookies = {}
-        logger.debug("Static asset request detected; not forwarding cookies.")
-    else:
-        forwarded_cookies = request.cookies
-
     async with ClientSession() as session:
         headers = dict(request.headers)
         headers.pop('Content-Length', None)
-        # For manifest.json, remove the Origin header to avoid CORS issues.
-        if static_asset and path == "/manifest.json":
+        # For manifest.json, remove Origin header to avoid CORS issues.
+        if static_asset and request.path == "/manifest.json":
             headers.pop('Origin', None)
             logger.debug("Removed Origin header for manifest.json request.")
         data = await request.read() if request.method != 'GET' else None
@@ -131,7 +139,7 @@ async def proxy_handler(request):
                 content_type = resp_headers.get('Content-Type', '')
                 logger.info(f"Response content type: {content_type}")
 
-                # If the response is HTML, rewrite it to inject base tag and adjust asset URLs.
+                # If the response is HTML, rewrite it.
                 if 'text/html' in content_type:
                     try:
                         body_text = body.decode('utf-8')
