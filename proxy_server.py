@@ -36,10 +36,7 @@ def start_openwebui():
     env = os.environ.copy()
     env['PORT'] = str(WEBUI_PORT)
     env['DATA_DIR'] = "/home/jovyan/.open-webui"
-    cmd = [
-        "open-webui",
-        "serve"
-    ]
+    cmd = ["open-webui", "serve"]
     logger.info(f"Starting Open WebUI with command: {' '.join(cmd)}")
     return subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, env=env)
 
@@ -54,17 +51,40 @@ async def is_openwebui_ready():
         logger.debug(f"is_openwebui_ready exception: {e}")
         return False
 
+def rewrite_html(body_text):
+    """
+    Rewrite the HTML to:
+      1. Inject a <base> tag into the <head> so relative URLs resolve correctly.
+      2. Rewrite asset URLs (href/src attributes) that start with "/" to include NB_PREFIX.
+    """
+    # 1. Inject a <base> tag.
+    base_tag = f'<base href="{NB_PREFIX.rstrip("/")}/">'
+    body_text = re.sub(r'(<head[^>]*>)', r'\1' + base_tag, body_text, count=1, flags=re.IGNORECASE)
+    logger.debug(f"Injected base tag: {base_tag}")
+
+    # 2. Rewrite asset URLs.
+    def repl(match):
+        attr = match.group(1)
+        url = match.group(2)
+        # Only rewrite if the URL doesn't already start with NB_PREFIX
+        if not url.startswith(NB_PREFIX):
+            new_url = NB_PREFIX + url
+            logger.debug(f"Rewriting {attr} URL: {url} -> {new_url}")
+            return f'{attr}="{new_url}"'
+        return match.group(0)
+
+    body_text = re.sub(r'(href|src)="(/[^"]+)"', repl, body_text)
+    return body_text
+
 async def proxy_handler(request):
     """
     Forward requests to Open WebUI after stripping NB_PREFIX from the path.
-    For HTML responses, inject a <base> tag into the <head> so that relative URLs
-    (like those for dynamic module imports) resolve correctly.
+    For HTML responses, rewrite the HTML so that asset URLs include NB_PREFIX.
     """
     logger.info(f"Incoming request: {request.method} {request.path}")
     logger.debug(f"Incoming headers: {dict(request.headers)}")
     logger.debug(f"Incoming cookies: {request.cookies}")
 
-    # Normalize incoming path
     path = normalize_path(request.path)
     target_url = f'http://127.0.0.1:{WEBUI_PORT}{path}'
     params = request.rel_url.query
@@ -76,7 +96,6 @@ async def proxy_handler(request):
         headers = dict(request.headers)
         headers.pop('Content-Length', None)
         data = await request.read() if request.method != 'GET' else None
-
         logger.debug(f"Forwarding headers: {headers}")
         logger.debug(f"Forwarding cookies: {request.cookies}")
 
@@ -97,23 +116,15 @@ async def proxy_handler(request):
                 content_type = resp_headers.get('Content-Type', '')
                 logger.info(f"Response content type: {content_type}")
 
-                # If the response is HTML, inject a <base> tag.
-                if 'text/html' in content_type and NB_PREFIX:
+                if 'text/html' in content_type:
                     try:
                         body_text = body.decode('utf-8')
-                        base_tag = f'<base href="{NB_PREFIX.rstrip("/")}/">'
-                        logger.debug(f"Injecting base tag: {base_tag}")
-                        # Insert the base tag immediately after the <head> tag.
-                        body_text = re.sub(r'(<head[^>]*>)', r'\1' + base_tag, body_text, count=1, flags=re.IGNORECASE)
+                        body_text = rewrite_html(body_text)
                         body = body_text.encode('utf-8')
                     except Exception as e:
-                        logger.error(f"Error injecting base tag: {e}")
+                        logger.error(f"Error rewriting HTML: {e}")
 
-                response = web.Response(
-                    status=resp.status,
-                    body=body
-                )
-                # Copy and adjust headers
+                response = web.Response(status=resp.status, body=body)
                 for key, value in resp_headers.items():
                     if key.lower() not in ('content-length', 'transfer-encoding'):
                         response.headers[key] = value
@@ -121,7 +132,7 @@ async def proxy_handler(request):
                     location = response.headers['Location']
                     if location.startswith('/') and not location.startswith('//'):
                         new_location = NB_PREFIX + location
-                        logger.debug(f"Rewriting Location header: {location} to {new_location}")
+                        logger.debug(f"Rewriting Location header: {location} -> {new_location}")
                         response.headers['Location'] = new_location
                 return response
         except Exception as e:
