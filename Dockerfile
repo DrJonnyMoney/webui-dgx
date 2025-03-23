@@ -39,8 +39,9 @@ RUN chown -R ${NB_USER}:${NB_GID} /tmp_home/jovyan/.open-webui
 
 # Configure Nginx
 RUN rm -f /etc/nginx/sites-enabled/default
-COPY nginx.conf /etc/nginx/conf.d/openwebui.conf
-RUN chmod 644 /etc/nginx/conf.d/openwebui.conf
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+RUN chmod 644 /etc/nginx/conf.d/default.conf && \
+    chown ${NB_USER}:${NB_GID} /etc/nginx/conf.d/default.conf
 
 # Create service directories
 RUN mkdir -p /etc/services.d/openwebui
