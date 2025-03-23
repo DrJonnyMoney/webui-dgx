@@ -51,6 +51,11 @@ COPY openwebui-run /etc/services.d/openwebui/run
 COPY nginx-run /etc/services.d/nginx/run
 RUN chmod 755 /etc/services.d/openwebui/run
 RUN chmod 755 /etc/services.d/nginx/run
+RUN ls -la /etc/services.d/openwebui/run
+RUN ls -la /etc/services.d/nginx/run
+RUN ls -la /etc/services.d/
+RUN cat /etc/services.d/openwebui/run
+RUN cat /etc/services.d/nginx/run
 
 # Expose port 8888
 EXPOSE 8888
