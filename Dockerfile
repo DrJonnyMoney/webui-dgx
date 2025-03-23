@@ -37,6 +37,10 @@ RUN pip install --upgrade pip && \
 RUN mkdir -p /tmp_home/jovyan/.open-webui
 RUN chown -R ${NB_USER}:${NB_GID} /tmp_home/jovyan/.open-webui
 
+# Fix permissions for the data directory
+RUN mkdir -p /opt/conda/lib/python3.11/site-packages/open_webui/data && \
+    chmod -R 777 /opt/conda/lib/python3.11/site-packages/open_webui/data
+    
 # Configure Nginx
 RUN rm -f /etc/nginx/sites-enabled/default
 COPY nginx.conf /etc/nginx/conf.d/default.conf
