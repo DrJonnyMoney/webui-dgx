@@ -59,9 +59,11 @@ RUN chmod 755 /etc/services.d/openwebui/run && \
     chmod 755 /etc/services.d/nginx/run && \
     chown ${NB_USER}:${NB_GID} /etc/services.d/nginx/run
 
-# Debug service scripts to verify they exist and have correct permissions
-RUN ls -la /etc/services.d/openwebui/run
-RUN ls -la /etc/services.d/nginx/run
+# Fix Nginx log permissions
+RUN mkdir -p /var/log/nginx && \
+    chmod 777 /var/log/nginx && \
+    touch /var/log/nginx/error.log /var/log/nginx/access.log && \
+    chmod 666 /var/log/nginx/error.log /var/log/nginx/access.log
 
 # Expose port 8888
 EXPOSE 8888
