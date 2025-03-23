@@ -46,16 +46,17 @@ RUN chmod 644 /etc/nginx/conf.d/openwebui.conf
 RUN mkdir -p /etc/services.d/openwebui
 RUN mkdir -p /etc/services.d/nginx
 
-# Copy the run scripts for services
+# Copy and set up service scripts exactly like the working example
 COPY openwebui-run /etc/services.d/openwebui/run
 COPY nginx-run /etc/services.d/nginx/run
-RUN chmod 755 /etc/services.d/openwebui/run
-RUN chmod 755 /etc/services.d/nginx/run
+RUN chmod 755 /etc/services.d/openwebui/run && \
+    chown ${NB_USER}:${NB_GID} /etc/services.d/openwebui/run && \
+    chmod 755 /etc/services.d/nginx/run && \
+    chown ${NB_USER}:${NB_GID} /etc/services.d/nginx/run
+
+# Debug service scripts to verify they exist and have correct permissions
 RUN ls -la /etc/services.d/openwebui/run
 RUN ls -la /etc/services.d/nginx/run
-RUN ls -la /etc/services.d/
-RUN cat /etc/services.d/openwebui/run
-RUN cat /etc/services.d/nginx/run
 
 # Expose port 8888
 EXPOSE 8888
