@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     ffmpeg \
     nginx \
+    gettext-base \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -37,39 +38,25 @@ RUN pip install --upgrade pip && \
 RUN mkdir -p /tmp_home/jovyan/.open-webui
 RUN chown -R ${NB_USER}:${NB_GID} /tmp_home/jovyan/.open-webui
 
-# Fix permissions for the data directory
-RUN mkdir -p /opt/conda/lib/python3.11/site-packages/open_webui/data && \
-    chmod -R 777 /opt/conda/lib/python3.11/site-packages/open_webui/data
-    
 # Configure Nginx
 RUN rm -f /etc/nginx/sites-enabled/default
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-RUN chmod 644 /etc/nginx/conf.d/default.conf && \
-    chown ${NB_USER}:${NB_GID} /etc/nginx/conf.d/default.conf
+COPY nginx.conf /etc/nginx/conf.d/openwebui.conf
 
 # Create service directories
 RUN mkdir -p /etc/services.d/openwebui
 RUN mkdir -p /etc/services.d/nginx
 
-# Copy and set up service scripts exactly like the working example
+# Copy the run scripts for services
 COPY openwebui-run /etc/services.d/openwebui/run
 COPY nginx-run /etc/services.d/nginx/run
-RUN chmod 755 /etc/services.d/openwebui/run && \
-    chown ${NB_USER}:${NB_GID} /etc/services.d/openwebui/run && \
-    chmod 755 /etc/services.d/nginx/run && \
-    chown ${NB_USER}:${NB_GID} /etc/services.d/nginx/run
-
-# Fix Nginx log permissions
-RUN mkdir -p /var/log/nginx && \
-    chmod 777 /var/log/nginx && \
-    touch /var/log/nginx/error.log /var/log/nginx/access.log && \
-    chmod 666 /var/log/nginx/error.log /var/log/nginx/access.log
+RUN chmod 755 /etc/services.d/openwebui/run
+RUN chmod 755 /etc/services.d/nginx/run
 
 # Expose port 8888
 EXPOSE 8888
 
-# Switch back to non-root user
-USER $NB_UID
+# Stay as root (Don't switch back to non-root user)
+# ENTRYPOINT will still use root
 
 # Keep the original entrypoint
 ENTRYPOINT ["/init"]
