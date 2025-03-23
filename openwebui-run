@@ -1,6 +1,6 @@
-#!/command/with-contenv bash
+#!/usr/bin/with-contenv bash
 cd /home/jovyan
 exec 2>&1
 
-# Run the proxy server
-exec python proxy_server.py
+# Start Open WebUI directly
+exec open-webui serve --host 127.0.0.1 --port 8080
